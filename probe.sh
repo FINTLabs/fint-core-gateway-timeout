@@ -2,8 +2,8 @@
 set -uo pipefail
 
 usage() {
-  echo "usage: $0 [-m hold|drip] [-i interval] [-n] <base-url> <duration>..." >&2
-  echo "example: $0 https://<host>/gateway-timeout 30 60 120 240 300" >&2
+  echo "usage: [TOKEN=<access token>] $0 [-m hold|drip] [-i interval] [-n] <base-url> <duration>..." >&2
+  echo "example: TOKEN=\$token $0 https://alpha.test.felleskomponent.no/core/gateway-timeout 60 110 130 180" >&2
   exit 1
 }
 
@@ -34,9 +34,12 @@ for duration in "$@"; do
     url="$url&interval=$interval"
   fi
 
-  curl_args=(-sS -o /dev/null -w 'status=%{http_code} first_byte=%{time_starttransfer}s total=%{time_total}s')
+  curl_args=(-sS --http1.1 -o /dev/null -w 'status=%{http_code} first_byte=%{time_starttransfer}s total=%{time_total}s')
   if [ -n "$no_keepalive" ]; then
     curl_args+=(--no-keepalive)
+  fi
+  if [ -n "${TOKEN:-}" ]; then
+    curl_args+=(-H "Authorization: Bearer $TOKEN")
   fi
 
   error_file="$(mktemp)"

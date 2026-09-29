@@ -9,4 +9,4 @@ patches:
     patch: |
       - op: replace
         path: /spec/ingress/routes/0/host
-        value: alpha.felleskomponent.no
+        value: alpha.test.felleskomponent.no

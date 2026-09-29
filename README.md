@@ -24,6 +24,7 @@ When something between the client and the server cuts a request, the server logs
 
 On the client side, the shape of the failure tells you which layer cut it:
 
+- **401 with `Server: Apache` and `WWW-Authenticate: Bearer realm="AM"`**: the network gateway turned the request away before it reached the cluster. It needs a valid FINT access token (see `TOKEN` below).
 - **504 or 502 with a proxy error page**: the proxy (Traefik) cut it.
 - **No status at all** (`curl: (52) Empty reply from server`, `(56) Connection reset by peer`): a load balancer, NAT or firewall dropped the connection.
 - **The client's own timeout error** (`curl: (28)`): the client gave up first.
@@ -72,8 +73,8 @@ Every push to `main` runs the tests, pushes `ghcr.io/fintlabs/fint-core-gateway-
 The deploy unit is a FLAIS `Application` in `kustomize/base`. The alpha overlay sets the route host, so the server answers on:
 
 ```
-https://alpha.felleskomponent.no/core/gateway-timeout/hold/{duration}
-https://alpha.felleskomponent.no/core/gateway-timeout/drip/{duration}
+https://alpha.test.felleskomponent.no/core/gateway-timeout/hold/{duration}
+https://alpha.test.felleskomponent.no/core/gateway-timeout/drip/{duration}
 ```
 
 The route uses the same host as the real FINT services on purpose, so the probe goes through the same network gateway and Traefik as real traffic. The ingress does not strip `/core/gateway-timeout`, which is why `BASE_PATH` is set.
@@ -86,9 +87,22 @@ The route uses the same host as the real FINT services on purpose, so the probe 
 
 ```bash
 ./probe.sh https://<host>/core/gateway-timeout 30 60 120 240 300
-./probe.sh -m drip -i 10 https://<host>/core/gateway-timeout 300 600 1200
+./probe.sh -m drip -i 10 https://<host>/core/gateway-timeout 300 540
 ./probe.sh -n https://<host>/core/gateway-timeout 240 300
 ```
+
+The network gateway in front of `*.felleskomponent.no` wants a bearer token on every request. Put one in `TOKEN` and the script sends it as `Authorization: Bearer`. Get one with a FINT client's credentials:
+
+```bash
+export TOKEN=$(curl -sS https://idp.felleskomponent.no/nidp/oauth/nam/token \
+  -d grant_type=password -d scope=fint-client \
+  --data-urlencode client_id="$CLIENT_ID" --data-urlencode client_secret="$CLIENT_SECRET" \
+  --data-urlencode username="$USERNAME" --data-urlencode password="$PASSWORD" | jq -r .access_token)
+
+./probe.sh https://alpha.test.felleskomponent.no/core/gateway-timeout 60 110 130 180
+```
+
+Tokens expire, so get a fresh one before each run.
 
 | Flag | Meaning |
 |---|---|
@@ -97,5 +111,7 @@ The route uses the same host as the real FINT services on purpose, so the probe 
 | `-n` | Turn off curl's TCP keepalive. |
 
 By default curl sends a TCP keepalive packet every 60 seconds. That can keep a load balancer's idle timer from ever firing, and the clients you actually care about may not send them. Run with and without `-n` and compare.
+
+The script always uses HTTP/1.1. `alpha.test.felleskomponent.no` agrees to HTTP/2 when the connection is set up, then fails with `curl: (16) Error in the HTTP2 framing layer`, while `alpha.felleskomponent.no` only speaks HTTP/1.1. When you call the host by hand, add `--http1.1` too.
 
 The script tags every request with `probe=<time>-<mode>-<duration>`, so each output line can be found in the server logs.
