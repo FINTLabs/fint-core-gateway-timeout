@@ -1,0 +1,106 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: cd-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/fintlabs/fint-core-gateway-timeout
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - run: go vet ./...
+
+      - run: go test -race ./...
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.tag.outputs.image }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Image tag
+        id: tag
+        run: echo "image=$IMAGE:sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.tag.outputs.image }}
+            ${{ env.IMAGE }}:latest
+
+  deploy:
+    name: Deploy to alpha
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment: alpha
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Bake manifests with Kustomize
+        id: bake
+        uses: azure/k8s-bake@v4.0.0
+        with:
+          renderEngine: kustomize
+          kustomizationPath: kustomize/overlays/alpha
+
+      - name: Substitute image into baked YAML
+        id: substitute
+        uses: azure/k8s-artifact-substitute@v2.0.0
+        with:
+          manifests: ${{ steps.bake.outputs.manifestsBundle }}
+          images: ${{ needs.build.outputs.image }}
+
+      - uses: azure/login@v3.0.0
+        with:
+          creds: ${{ secrets.AKS_ALPHA_FINT_GITHUB }}
+
+      - uses: azure/use-kubelogin@v1
+        with:
+          kubelogin-version: "v0.0.26"
+
+      - name: Set the target cluster
+        uses: azure/aks-set-context@v5.0.0
+        with:
+          cluster-name: aks-alpha-fint-2021-11-18
+          resource-group: rg-aks-alpha
+          admin: "true"
+          use-kubelogin: "true"
+
+      - name: Deploy
+        uses: azure/k8s-deploy@v6.0.0
+        with:
+          action: deploy
+          manifests: ${{ steps.substitute.outputs.manifests }}
+          images: ${{ needs.build.outputs.image }}
+          pull-images: false
+          namespace: fint-core
